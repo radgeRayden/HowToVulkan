@@ -462,10 +462,71 @@ int main(int argc, char* argv[])
 	uint64_t lastTime{ SDL_GetTicks() };
 	bool quit{ false };
 	while (!quit) {
+		// Event polling
+		float elapsedTime{ (SDL_GetTicks() - lastTime) / 1000.0f };
+		lastTime = SDL_GetTicks();
+		for (SDL_Event event; SDL_PollEvent(&event);) {
+			if (event.type == SDL_EVENT_QUIT) {
+				quit = true;
+				break;
+			}
+			if (event.type == SDL_EVENT_MOUSE_MOTION) {
+				if (event.button.button == SDL_BUTTON_LEFT) {
+					objectRotations[shaderData.selected].x -= (float)event.motion.yrel * elapsedTime;
+					objectRotations[shaderData.selected].y += (float)event.motion.xrel * elapsedTime;
+				}
+			}
+			if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+				camPos.z += (float)event.wheel.y * elapsedTime * 10.0f;
+			}
+			if (event.type == SDL_EVENT_KEY_DOWN) {
+				if (event.key.key == SDLK_PLUS || event.key.key == SDLK_KP_PLUS) {
+					shaderData.selected = (shaderData.selected < 2) ? shaderData.selected + 1 : 0;
+				}
+				if (event.key.key == SDLK_MINUS || event.key.key == SDLK_KP_MINUS) {
+					shaderData.selected = (shaderData.selected > 0) ? shaderData.selected - 1 : 2;
+				}
+			}
+			// Window resize
+			if (event.type == SDL_EVENT_WINDOW_RESIZED) {
+				updateSwapchain = true;
+			}
+		}
+		if (updateSwapchain) {
+			chk(SDL_GetWindowSize(window, &windowSize.x, &windowSize.y));
+			updateSwapchain = false;
+			chk(vkDeviceWaitIdle(device));
+			chk(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(devices[deviceIndex], surface, &surfaceCaps));
+			swapchainCI.oldSwapchain = swapchain;
+			swapchainCI.imageExtent = { .width = static_cast<uint32_t>(windowSize.x), .height = static_cast<uint32_t>(windowSize.y)};
+			chk(vkCreateSwapchainKHR(device, &swapchainCI, nullptr, &swapchain));
+			for (auto i = 0; i < imageCount; i++) {
+				vkDestroyImageView(device, swapchainImageViews[i], nullptr);
+			}
+			chk(vkGetSwapchainImagesKHR(device, swapchain, &imageCount, nullptr));
+			swapchainImages.resize(imageCount);
+			chk(vkGetSwapchainImagesKHR(device, swapchain, &imageCount, swapchainImages.data()));
+			swapchainImageViews.resize(imageCount);
+			for (auto i = 0; i < imageCount; i++) {
+				VkImageViewCreateInfo viewCI{ .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = swapchainImages[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = imageFormat, .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1} };
+				chk(vkCreateImageView(device, &viewCI, nullptr, &swapchainImageViews[i]));
+			}
+			vkDestroySwapchainKHR(device, swapchainCI.oldSwapchain, nullptr);
+			vmaDestroyImage(allocator, depthImage, depthImageAllocation);
+			vkDestroyImageView(device, depthImageView, nullptr);
+			depthImageCI.extent = { .width = static_cast<uint32_t>(windowSize.x), .height = static_cast<uint32_t>(windowSize.y), .depth = 1 };
+			VmaAllocationCreateInfo allocCI{ .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT, .usage = VMA_MEMORY_USAGE_AUTO };
+			chk(vmaCreateImage(allocator, &depthImageCI, &allocCI, &depthImage, &depthImageAllocation, nullptr));
+			VkImageViewCreateInfo viewCI{ .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = depthImage, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = depthFormat, .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .levelCount = 1, .layerCount = 1 } };
+			chk(vkCreateImageView(device, &viewCI, nullptr, &depthImageView));
+		}
 		// Sync
 		chk(vkWaitForFences(device, 1, &fences[frameIndex], true, UINT64_MAX));
-		chk(vkResetFences(device, 1, &fences[frameIndex]));
 		chkSwapchain(vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, presentSemaphores[frameIndex], VK_NULL_HANDLE, &imageIndex));
+		if (updateSwapchain) {
+			continue;
+		}
+		chk(vkResetFences(device, 1, &fences[frameIndex]));
 		// Update shader data
 		shaderData.projection = glm::perspective(glm::radians(45.0f), (float)windowSize.x / (float)windowSize.y, 0.1f, 32.0f);
 		shaderData.view = glm::translate(glm::mat4(1.0f), camPos);
@@ -579,64 +640,6 @@ int main(int argc, char* argv[])
 			.pImageIndices = &imageIndex
 		};
 		chkSwapchain(vkQueuePresentKHR(queue, &presentInfo));
-		// Event polling
-		float elapsedTime{ (SDL_GetTicks() - lastTime) / 1000.0f };
-		lastTime = SDL_GetTicks();
-		for (SDL_Event event; SDL_PollEvent(&event);) {
-			if (event.type == SDL_EVENT_QUIT) {
-				quit = true;
-				break;
-			}
-			if (event.type == SDL_EVENT_MOUSE_MOTION) {
-				if (event.button.button == SDL_BUTTON_LEFT) {
-					objectRotations[shaderData.selected].x -= (float)event.motion.yrel * elapsedTime;
-					objectRotations[shaderData.selected].y += (float)event.motion.xrel * elapsedTime;
-				}
-			}
-			if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-				camPos.z += (float)event.wheel.y * elapsedTime * 10.0f;
-			}
-			if (event.type == SDL_EVENT_KEY_DOWN) {
-				if (event.key.key == SDLK_PLUS || event.key.key == SDLK_KP_PLUS) {
-					shaderData.selected = (shaderData.selected < 2) ? shaderData.selected + 1 : 0;
-				}
-				if (event.key.key == SDLK_MINUS || event.key.key == SDLK_KP_MINUS) {
-					shaderData.selected = (shaderData.selected > 0) ? shaderData.selected - 1 : 2;
-				}
-			}
-			// Window resize
-			if (event.type == SDL_EVENT_WINDOW_RESIZED) {
-				updateSwapchain = true;
-			}
-		}
-		if (updateSwapchain) {
-			chk(SDL_GetWindowSize(window, &windowSize.x, &windowSize.y));
-			updateSwapchain = false;
-			chk(vkDeviceWaitIdle(device));
-			chk(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(devices[deviceIndex], surface, &surfaceCaps));
-			swapchainCI.oldSwapchain = swapchain;
-			swapchainCI.imageExtent = { .width = static_cast<uint32_t>(windowSize.x), .height = static_cast<uint32_t>(windowSize.y)};
-			chk(vkCreateSwapchainKHR(device, &swapchainCI, nullptr, &swapchain));
-			for (auto i = 0; i < imageCount; i++) {
-				vkDestroyImageView(device, swapchainImageViews[i], nullptr);
-			}
-			chk(vkGetSwapchainImagesKHR(device, swapchain, &imageCount, nullptr));
-			swapchainImages.resize(imageCount);
-			chk(vkGetSwapchainImagesKHR(device, swapchain, &imageCount, swapchainImages.data()));
-			swapchainImageViews.resize(imageCount);
-			for (auto i = 0; i < imageCount; i++) {
-				VkImageViewCreateInfo viewCI{ .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = swapchainImages[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = imageFormat, .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1} };
-				chk(vkCreateImageView(device, &viewCI, nullptr, &swapchainImageViews[i]));
-			}
-			vkDestroySwapchainKHR(device, swapchainCI.oldSwapchain, nullptr);
-			vmaDestroyImage(allocator, depthImage, depthImageAllocation);
-			vkDestroyImageView(device, depthImageView, nullptr);
-			depthImageCI.extent = { .width = static_cast<uint32_t>(windowSize.x), .height = static_cast<uint32_t>(windowSize.y), .depth = 1 };
-			VmaAllocationCreateInfo allocCI{ .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT, .usage = VMA_MEMORY_USAGE_AUTO };
-			chk(vmaCreateImage(allocator, &depthImageCI, &allocCI, &depthImage, &depthImageAllocation, nullptr));
-			VkImageViewCreateInfo viewCI{ .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = depthImage, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = depthFormat, .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .levelCount = 1, .layerCount = 1 } };
-			chk(vkCreateImageView(device, &viewCI, nullptr, &depthImageView));
-		}
 	}
 	// Tear down
 	chk(vkDeviceWaitIdle(device));
